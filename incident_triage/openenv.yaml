@@ -1,0 +1,16 @@
+name: incident_triage
+version: "1.0.0"
+description: >
+  DevOps Incident Response Triage environment. An AI agent
+  acts as an on-call SRE engineer — reads server logs and
+  alerts, then diagnoses severity, root cause, and first
+  response action. 3 tasks ranging from single service down
+  (easy) to cascading microservice failure (hard).
+runtime: docker
+port: 8000
+tags:
+  - openenv
+  - devops
+  - sre
+  - incident-response
+  - real-world
