@@ -12,14 +12,36 @@ and triage realistic production incidents across three tasks of
 increasing difficulty.
 """
 
+import pathlib
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.types import EnvironmentMetadata
 
 try:
     from ..models import IncidentTriageAction, IncidentTriageObservation, IncidentTriageState
 except (ImportError, ModuleNotFoundError):
     from models import IncidentTriageAction, IncidentTriageObservation, IncidentTriageState
+
+_README_PATH = pathlib.Path(__file__).parent.parent / "README.md"
+
+
+# ---------------------------------------------------------------------------
+# Shared state for HTTP REST endpoints
+#
+# The openenv HTTP server creates a fresh Environment instance per request,
+# so /reset and /step would otherwise never share state.  This dict lives at
+# module level and is loaded/saved on every reset() / step() call, making the
+# HTTP REST API stateful for single-user development use.
+# ---------------------------------------------------------------------------
+
+_SHARED: dict = {
+    "task_cycle_index": 0,
+    "current_task": "",
+    "current_turn": 0,
+    "cumulative_reward": 0.0,
+    "state": None,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +198,34 @@ class IncidentTriageEnvironment(Environment):
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     def __init__(self) -> None:
-        self._task_cycle_index: int = 0
-        self._current_task: str = ""
-        self._current_turn: int = 0
-        self._cumulative_reward: float = 0.0
-        self._state = IncidentTriageState()
+        self._task_cycle_index: int = _SHARED["task_cycle_index"]
+        self._current_task: str = _SHARED["current_task"]
+        self._current_turn: int = _SHARED["current_turn"]
+        self._cumulative_reward: float = _SHARED["cumulative_reward"]
+        self._state: IncidentTriageState = _SHARED["state"] or IncidentTriageState()
+
+    def _persist(self) -> None:
+        """Write instance state back to the module-level shared dict."""
+        _SHARED["task_cycle_index"] = self._task_cycle_index
+        _SHARED["current_task"] = self._current_task
+        _SHARED["current_turn"] = self._current_turn
+        _SHARED["cumulative_reward"] = self._cumulative_reward
+        _SHARED["state"] = self._state
+
+    def get_metadata(self) -> EnvironmentMetadata:
+        readme = _README_PATH.read_text(encoding="utf-8") if _README_PATH.exists() else None
+        return EnvironmentMetadata(
+            name="incident_triage",
+            description=(
+                "DevOps Incident Response Triage environment. An AI agent acts as an "
+                "on-call SRE engineer — reads server logs and alerts, then diagnoses "
+                "severity, root cause, and first response action."
+            ),
+            readme_content=readme,
+            version="1.0.0",
+            author="OpenEnv / Mission Bangalore",
+            documentation_url="https://github.com/meta-pytorch/OpenEnv",
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -206,11 +251,13 @@ class IncidentTriageEnvironment(Environment):
             cumulative_reward=0.0,
         )
 
-        return IncidentTriageObservation(
+        obs = IncidentTriageObservation(
             **_INITIAL_OBS[task_name],
             done=False,
             reward=0.0,
         )
+        self._persist()
+        return obs
 
     def step(self, action: IncidentTriageAction) -> IncidentTriageObservation:  # type: ignore[override]
         """Grade the agent's action and advance the episode."""
@@ -227,6 +274,8 @@ class IncidentTriageEnvironment(Environment):
             done=episode_done,
             cumulative_reward=self._cumulative_reward,
         )
+
+        self._persist()
 
         # Multi-turn: return the turn-2 observation after turn 1 of cascading_failure
         if self._current_task == "cascading_failure" and not episode_done:
