@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Incident Triage Demo UI</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 10px; padding: 14px; }
+    h1, h2, h3 { margin: 0 0 10px; }
+    label { display: block; margin: 10px 0 6px; color: #93c5fd; font-size: 14px; }
+    select, input, textarea, button { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e2e8f0; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { cursor: pointer; background: #1d4ed8; border-color: #1d4ed8; font-weight: bold; }
+    button.secondary { background: #334155; border-color: #334155; }
+    .stack { display: grid; gap: 10px; }
+    .small { font-size: 13px; color: #94a3b8; }
+    .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; margin-right: 6px; background: #1e293b; font-size: 12px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Incident Triage Demo UI</h1>
+    <p class="small">Use this to understand the environment loop: reset task -> inspect observation -> submit action -> read reward.</p>
+
+    <div class="row">
+      <section class="card stack">
+        <h2>1) Start / Reset</h2>
+        <label for="apiBase">API Base URL</label>
+        <input id="apiBase" value="http://localhost:8000" />
+        <label for="task">Task</label>
+        <select id="task">
+          <option value="single_service_down">single_service_down</option>
+          <option value="bad_deployment">bad_deployment</option>
+          <option value="cascading_failure">cascading_failure</option>
+        </select>
+        <button id="resetBtn">Reset Task</button>
+        <p id="episodeInfo" class="small">Episode not started.</p>
+      </section>
+
+      <section class="card stack">
+        <h2>2) Agent Action</h2>
+        <label for="severity">severity</label>
+        <select id="severity">
+          <option>low</option><option>medium</option><option>high</option><option>critical</option>
+        </select>
+        <label for="rootCause">root_cause</label>
+        <select id="rootCause">
+          <option>database</option><option>memory</option><option>network</option><option>bad_deploy</option><option>unknown</option>
+        </select>
+        <label for="firstAction">first_action</label>
+        <textarea id="firstAction" placeholder="e.g. rollback inventory-service to previous stable version"></textarea>
+        <label for="escalate">escalate</label>
+        <select id="escalate"><option value="false">false</option><option value="true">true</option></select>
+        <button id="stepBtn">Submit Action (Step)</button>
+      </section>
+    </div>
+
+    <div class="row" style="margin-top: 16px;">
+      <section class="card">
+        <h3>Current Observation</h3>
+        <div id="obsMeta" class="small"></div>
+        <div id="alerts"></div>
+        <h4>Logs</h4>
+        <pre id="logs">No data yet.</pre>
+      </section>
+      <section class="card">
+        <h3>Step Result</h3>
+        <p id="reward">Reward: -</p>
+        <p id="done">Done: -</p>
+        <h4>Raw Response</h4>
+        <pre id="raw">No response yet.</pre>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = { observation: null };
+
+    function getApiBase() {
+      const raw = (document.getElementById("apiBase").value || "").trim();
+      return raw || "http://localhost:8000";
+    }
+
+    function apiUrl(path) {
+      return new URL(path, getApiBase()).toString();
+    }
+
+    function unwrap(payload) {
+      if (!payload || typeof payload !== "object") return {};
+      if (payload.observation) {
+        return {
+          observation: payload.observation,
+          reward: payload.reward,
+          done: payload.done
+        };
+      }
+      return {
+        observation: payload,
+        reward: payload.reward,
+        done: payload.done
+      };
+    }
+
+    function renderObservation(obs) {
+      if (!obs) return;
+      const obsMeta = document.getElementById("obsMeta");
+      const alerts = document.getElementById("alerts");
+      const logs = document.getElementById("logs");
+      obsMeta.textContent =
+        `Task: ${obs.task_name || "-"} | Turn: ${obs.turn ?? "-"} | CPU: ${obs.cpu_percent ?? "-"} | MEM: ${obs.memory_percent ?? "-"}`;
+      alerts.innerHTML = (obs.alerts || []).map(a => `<span class="pill">${a}</span>`).join("") || "<span class='small'>No active alerts</span>";
+      logs.textContent = (obs.logs || []).join("\n") || "(No logs returned)";
+    }
+
+    function renderResult(payload) {
+      const raw = document.getElementById("raw");
+      const reward = document.getElementById("reward");
+      const done = document.getElementById("done");
+      raw.textContent = JSON.stringify(payload, null, 2);
+      const normalized = unwrap(payload);
+      reward.textContent = `Reward: ${normalized.reward ?? "-"}`;
+      done.textContent = `Done: ${normalized.done ?? "-"}`;
+      if (normalized.observation) {
+        state.observation = normalized.observation;
+        renderObservation(normalized.observation);
+      }
+      document.getElementById("episodeInfo").textContent = `Current task: ${state.observation?.task_name || "-"}`;
+    }
+
+    async function resetTask() {
+      const task = document.getElementById("task").value;
+      try {
+        const res = await fetch(apiUrl("/reset"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task_name: task })
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
+        }
+        const data = await res.json();
+        renderResult(data);
+      } catch (err) {
+        document.getElementById("raw").textContent = `Reset error: ${err.message}`;
+      }
+    }
+
+    async function stepTask() {
+      const payload = {
+        severity: document.getElementById("severity").value,
+        root_cause: document.getElementById("rootCause").value,
+        first_action: document.getElementById("firstAction").value || "no action",
+        escalate: document.getElementById("escalate").value === "true"
+      };
+      try {
+        const res = await fetch(apiUrl("/step"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: payload })
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
+        }
+        const data = await res.json();
+        renderResult(data);
+      } catch (err) {
+        document.getElementById("raw").textContent = `Step error: ${err.message}`;
+      }
+    }
+
+    document.getElementById("resetBtn").addEventListener("click", resetTask);
+    document.getElementById("stepBtn").addEventListener("click", stepTask);
+  </script>
+</body>
+</html>

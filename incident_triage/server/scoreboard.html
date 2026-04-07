@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Incident Triage Scoreboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #020617; color: #e2e8f0; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+    .card { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+    button { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #334155; text-align: left; padding: 8px; }
+    .muted { color: #94a3b8; font-size: 13px; }
+    .ok { color: #22c55e; }
+    .warn { color: #f59e0b; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Benchmark Scoreboard</h1>
+    <p class="muted">Runs a deterministic baseline agent across all tasks and shows final score per task.</p>
+
+    <div class="card">
+      <div style="margin-bottom:10px;">
+        <label class="muted" for="apiBase">API Base URL</label>
+        <input id="apiBase" value="http://localhost:8000" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #334155;background:#020617;color:#e2e8f0;" />
+      </div>
+      <button id="runBtn">Run Benchmark</button>
+      <span id="status" class="muted"></span>
+      <table>
+        <thead><tr><th>Task</th><th>Score</th></tr></thead>
+        <tbody id="rows">
+          <tr><td>single_service_down</td><td>-</td></tr>
+          <tr><td>bad_deployment</td><td>-</td></tr>
+          <tr><td>cascading_failure</td><td>-</td></tr>
+          <tr><td><strong>AVERAGE</strong></td><td><strong>-</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const TASKS = ["single_service_down", "bad_deployment", "cascading_failure"];
+
+    function chooseAction(task, turn) {
+      if (task === "single_service_down") {
+        return { severity: "high", root_cause: "database", first_action: "restart database and verify connection on port 5432", escalate: false };
+      }
+      if (task === "bad_deployment") {
+        return { severity: "high", root_cause: "bad_deploy", first_action: "rollback inventory-service to previous stable version", escalate: false };
+      }
+      if (task === "cascading_failure" && turn === 0) {
+        return { severity: "critical", root_cause: "database", first_action: "increase postgres connection pool limit immediately", escalate: true };
+      }
+      return { severity: "high", root_cause: "database", first_action: "resolve deadlock query on order-service", escalate: true };
+    }
+
+    function getApiBase() {
+      const raw = (document.getElementById("apiBase").value || "").trim();
+      return raw || "http://localhost:8000";
+    }
+
+    function apiUrl(path) {
+      return new URL(path, getApiBase()).toString();
+    }
+
+    async function postJson(path, payload) {
+      const requestBody = path === "/step" ? { action: payload } : payload;
+      const res = await fetch(apiUrl(path), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt || "no body"}`);
+      }
+      return res.json();
+    }
+
+    async function runTask(task) {
+      let data = await postJson("/reset", { task_name: task });
+      let obs = data.observation || data;
+      let done = Boolean(data.done ?? obs.done ?? false);
+      while (!done) {
+        const action = chooseAction(task, obs.turn || 0);
+        data = await postJson("/step", action);
+        obs = data.observation || data;
+        done = Boolean(data.done ?? obs.done ?? false);
+      }
+      return Number(data.reward ?? obs.reward ?? 0);
+    }
+
+    function render(scores) {
+      const rows = document.getElementById("rows");
+      const avg = (scores.single_service_down + scores.bad_deployment + scores.cascading_failure) / 3;
+      rows.innerHTML = `
+        <tr><td>single_service_down</td><td class="${scores.single_service_down >= 0.9 ? "ok" : "warn"}">${scores.single_service_down.toFixed(3)}</td></tr>
+        <tr><td>bad_deployment</td><td class="${scores.bad_deployment >= 0.9 ? "ok" : "warn"}">${scores.bad_deployment.toFixed(3)}</td></tr>
+        <tr><td>cascading_failure</td><td class="${scores.cascading_failure >= 0.9 ? "ok" : "warn"}">${scores.cascading_failure.toFixed(3)}</td></tr>
+        <tr><td><strong>AVERAGE</strong></td><td><strong>${avg.toFixed(3)}</strong></td></tr>
+      `;
+    }
+
+    document.getElementById("runBtn").addEventListener("click", async () => {
+      const status = document.getElementById("status");
+      try {
+        status.textContent = " Running...";
+        const scores = {};
+        for (const task of TASKS) scores[task] = await runTask(task);
+        render(scores);
+        status.textContent = " Done.";
+      } catch (err) {
+        status.textContent = ` Error: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

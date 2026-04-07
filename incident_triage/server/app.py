@@ -27,8 +27,11 @@ Usage:
     # Or run directly:
     python -m server.app
 """
+import pathlib
 
 try:
+    from fastapi.responses import RedirectResponse
+    from fastapi.responses import HTMLResponse
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
     raise ImportError(
@@ -51,6 +54,27 @@ app = create_app(
     env_name="incident_triage",
     max_concurrent_envs=10,  # allow up to 10 concurrent WebSocket sessions for parallel evaluation
 )
+
+_DEMO_HTML = pathlib.Path(__file__).with_name("demo.html")
+_SCOREBOARD_HTML = pathlib.Path(__file__).with_name("scoreboard.html")
+
+
+@app.get("/")
+def root_redirect() -> RedirectResponse:
+    """Redirect root requests to the demo page."""
+    return RedirectResponse(url="/demo")
+
+
+@app.get("/demo", response_class=HTMLResponse)
+def demo_page() -> HTMLResponse:
+    """Minimal UI to manually run task/reset/step loops."""
+    return HTMLResponse(_DEMO_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/scoreboard", response_class=HTMLResponse)
+def scoreboard_page() -> HTMLResponse:
+    """Scoreboard UI to run all benchmark tasks."""
+    return HTMLResponse(_SCOREBOARD_HTML.read_text(encoding="utf-8"))
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):

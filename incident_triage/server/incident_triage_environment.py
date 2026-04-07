@@ -13,6 +13,7 @@ increasing difficulty.
 """
 
 import pathlib
+from copy import deepcopy
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
@@ -41,6 +42,7 @@ _SHARED: dict = {
     "current_turn": 0,
     "cumulative_reward": 0.0,
     "state": None,
+    "task_variant_counter": {},
 }
 
 
@@ -50,8 +52,9 @@ _SHARED: dict = {
 
 _TASK_ORDER = ["single_service_down", "bad_deployment", "cascading_failure"]
 
-_INITIAL_OBS: dict[str, dict] = {
-    "single_service_down": dict(
+_INITIAL_OBS_VARIANTS: dict[str, list[dict]] = {
+    "single_service_down": [
+        dict(
         logs=[
             "[02:14:11] ERROR auth-service: connection refused port 5432",
             "[02:14:12] ERROR auth-service: health check failed (attempt 1/3)",
@@ -67,7 +70,25 @@ _INITIAL_OBS: dict[str, dict] = {
         task_name="single_service_down",
         turn=0,
     ),
-    "bad_deployment": dict(
+        dict(
+        logs=[
+            "[02:17:11] ERROR auth-service: DB connect timeout 5432",
+            "[02:17:12] WARN auth-service: readiness probe failed",
+            "[02:17:15] WARN auth-service: readiness probe failed",
+            "[02:17:18] CRITICAL auth-service: instance unhealthy",
+            "[02:17:19] ALERT auth-service unavailable",
+        ],
+        alerts=["auth-service unavailable for 90s"],
+        cpu_percent=18.0,
+        memory_percent=39.0,
+        services_affected=["auth-service"],
+        recent_deployments=[],
+        task_name="single_service_down",
+        turn=0,
+    ),
+    ],
+    "bad_deployment": [
+        dict(
         logs=[
             "[03:22:01] INFO inventory-service: deployed v2.3.1",
             "[03:22:45] WARN payment-service: upstream timeout (inventory)",
@@ -86,7 +107,26 @@ _INITIAL_OBS: dict[str, dict] = {
         task_name="bad_deployment",
         turn=0,
     ),
-    "cascading_failure": dict(
+        dict(
+        logs=[
+            "[03:40:01] INFO inventory-service: rollout started v2.4.0",
+            "[03:41:06] WARN payment-service: upstream latency spike inventory-service",
+            "[03:41:21] ERROR order-service: inventory dependency returned 503",
+            "[03:41:24] ERROR email-service: queue processing blocked by inventory sync",
+            "[03:41:26] ALERT 3 downstream services degraded",
+            "[03:41:27] INFO auth-service: healthy",
+        ],
+        alerts=["order-service degraded", "payment-service degraded", "email-service lag high"],
+        cpu_percent=63.0,
+        memory_percent=57.0,
+        services_affected=["payment-service", "order-service", "email-service"],
+        recent_deployments=["inventory-service v2.4.0 deployed 2 mins ago"],
+        task_name="bad_deployment",
+        turn=0,
+    ),
+    ],
+    "cascading_failure": [
+        dict(
         logs=[
             "[04:01:00] CRITICAL api-gateway: error rate 67%",
             "[04:01:01] ERROR auth-service: DB connection timeout",
@@ -105,6 +145,24 @@ _INITIAL_OBS: dict[str, dict] = {
         task_name="cascading_failure",
         turn=0,
     ),
+        dict(
+        logs=[
+            "[04:11:00] CRITICAL edge-gateway: 5xx rate 61%",
+            "[04:11:01] ERROR auth-service: database timeout",
+            "[04:11:01] ERROR order-service: waiting for postgres client",
+            "[04:11:02] ERROR payment-service: unable to acquire DB handle",
+            "[04:11:03] CRITICAL postgres-primary: max_connections limit reached",
+            "[04:11:04] ALERT global SLO breach detected",
+        ],
+        alerts=["edge-gateway SLO breach", "postgres saturation", "multiple services timing out"],
+        cpu_percent=89.0,
+        memory_percent=85.0,
+        services_affected=["edge-gateway", "auth-service", "payment-service", "order-service", "postgres-primary"],
+        recent_deployments=[],
+        task_name="cascading_failure",
+        turn=0,
+    ),
+    ],
 }
 
 _CASCADING_TURN2_OBS = dict(
@@ -138,7 +196,9 @@ def _grade_single_service_down(action: IncidentTriageAction) -> float:
     if action.root_cause == "database":
         score += 0.35
     fa = action.first_action.lower()
-    if "restart" in fa and "database" in fa:
+    if ("restart" in fa or "reconnect" in fa) and (
+        "database" in fa or "db" in fa or "postgres" in fa
+    ):
         score += 0.20
     if action.escalate is False:
         score += 0.10
@@ -153,7 +213,8 @@ def _grade_bad_deployment(action: IncidentTriageAction) -> float:
         score += 0.35
     if action.root_cause == "bad_deploy":
         score += 0.35
-    if "rollback" in action.first_action.lower():
+    fa = action.first_action.lower()
+    if "rollback" in fa or "roll back" in fa or "revert" in fa:
         score += 0.20
     if action.escalate is False:
         score += 0.10
@@ -169,7 +230,7 @@ def _grade_cascading_turn1(action: IncidentTriageAction) -> float:
     if action.root_cause == "database":
         score += 0.20
     fa = action.first_action.lower()
-    if "connection" in fa or "pool" in fa:
+    if "connection" in fa or "pool" in fa or "max_connections" in fa:
         score += 0.10
     if action.escalate is True:
         score += 0.10
@@ -203,6 +264,7 @@ class IncidentTriageEnvironment(Environment):
         self._current_turn: int = _SHARED["current_turn"]
         self._cumulative_reward: float = _SHARED["cumulative_reward"]
         self._state: IncidentTriageState = _SHARED["state"] or IncidentTriageState()
+        self._task_variant_counter: dict[str, int] = _SHARED["task_variant_counter"] or {}
 
     def _persist(self) -> None:
         """Write instance state back to the module-level shared dict."""
@@ -211,6 +273,13 @@ class IncidentTriageEnvironment(Environment):
         _SHARED["current_turn"] = self._current_turn
         _SHARED["cumulative_reward"] = self._cumulative_reward
         _SHARED["state"] = self._state
+        _SHARED["task_variant_counter"] = self._task_variant_counter
+
+    def _initial_obs_for_task(self, task_name: str) -> dict:
+        variants = _INITIAL_OBS_VARIANTS[task_name]
+        idx = self._task_variant_counter.get(task_name, 0) % len(variants)
+        self._task_variant_counter[task_name] = self._task_variant_counter.get(task_name, 0) + 1
+        return deepcopy(variants[idx])
 
     def get_metadata(self) -> EnvironmentMetadata:
         readme = _README_PATH.read_text(encoding="utf-8") if _README_PATH.exists() else None
@@ -237,7 +306,7 @@ class IncidentTriageEnvironment(Environment):
             task_name = _TASK_ORDER[self._task_cycle_index % len(_TASK_ORDER)]
             self._task_cycle_index += 1
 
-        if task_name not in _INITIAL_OBS:
+        if task_name not in _INITIAL_OBS_VARIANTS:
             raise ValueError(f"Unknown task: {task_name!r}. Choose from {_TASK_ORDER}")
 
         self._current_task = task_name
@@ -251,11 +320,7 @@ class IncidentTriageEnvironment(Environment):
             cumulative_reward=0.0,
         )
 
-        obs = IncidentTriageObservation(
-            **_INITIAL_OBS[task_name],
-            done=False,
-            reward=0.0,
-        )
+        obs = IncidentTriageObservation(**self._initial_obs_for_task(task_name), done=False, reward=0.0)
         self._persist()
         return obs
 

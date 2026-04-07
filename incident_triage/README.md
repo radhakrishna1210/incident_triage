@@ -109,9 +109,23 @@ Over-escalating (paging on-call for a contained issue) is penalised. Correct dia
 
 ---
 
-## Baseline Results
+## Evaluation Metrics
 
-Tested with **Qwen2.5-72B-Instruct** via HuggingFace Inference Router:
+We track three core metrics:
+
+| Metric | Formula | Target |
+|---|---|---|
+| Per-task reward | final `reward` returned by environment (0.0 to 1.0) | >= 0.80 |
+| Benchmark average | `(task1 + task2 + task3) / 3` | >= 0.85 |
+| Perfect-task count | number of tasks with score `1.0` | 2+ |
+
+Notes:
+- `cascading_failure` is multi-turn; both turns are summed and capped at `1.0`.
+- Over-escalation and weak first-action phrasing reduce reward.
+
+## Reference Baselines
+
+### LLM baseline (historical, before rubric robustness update)
 
 | Task | Score |
 |---|---|
@@ -120,7 +134,20 @@ Tested with **Qwen2.5-72B-Instruct** via HuggingFace Inference Router:
 | cascading_failure | 1.00 |
 | **Average** | **0.717** |
 
-Interesting pattern: the hard multi-turn task scored highest. The model nailed cascading failure reasoning but lost points on the easier tasks due to over-escalation and synonym mismatches (`"roll back"` vs `"rollback"`). This shows the benchmark is sensitive to precision, not just general knowledge.
+This historical run exposed two common failure modes: over-escalation and keyword brittleness.
+
+### Deterministic benchmark agent (current rubric sanity check)
+
+A rule-based "oracle-style" agent now runs via `GET /scoreboard` and should score:
+
+| Task | Score |
+|---|---|
+| single_service_down | 1.00 |
+| bad_deployment | 1.00 |
+| cascading_failure | 1.00 |
+| **Average** | **1.000** |
+
+Use this as a regression guard for environment changes; your target LLM should approach this ceiling.
 
 ---
 
@@ -130,10 +157,15 @@ Interesting pattern: the hard multi-turn task scored highest. The model nailed c
 
 ```bash
 cd incident_triage
+uv sync
 uv run server
 # Server running at http://localhost:8000
 # API docs at http://localhost:8000/docs
+# Demo UI at http://localhost:8000/demo
+# Scoreboard UI at http://localhost:8000/scoreboard
 ```
+
+If you see `ModuleNotFoundError: openenv`, run `uv sync` in this folder and start again with `uv run server`.
 
 ### Run inference against any LLM
 

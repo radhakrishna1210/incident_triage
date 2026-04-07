@@ -6,8 +6,12 @@
 
 """Incident Triage Environment."""
 
-from .client import IncidentTriageEnv
 from .models import IncidentTriageAction, IncidentTriageObservation
+
+try:
+    from .client import IncidentTriageEnv
+except Exception:  # pragma: no cover - allow importing models without client deps
+    IncidentTriageEnv = None  # type: ignore[assignment]
 
 __all__ = [
     "IncidentTriageAction",

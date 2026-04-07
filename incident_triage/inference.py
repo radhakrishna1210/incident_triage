@@ -46,6 +46,10 @@ TASKS = ["single_service_down", "bad_deployment", "cascading_failure"]
 SYSTEM_PROMPT = (
     "You are an expert SRE engineer doing incident triage.\n"
     "You will receive server logs and alerts.\n"
+    "Prioritize root-cause precision and calibrated escalation.\n"
+    "Escalate=true only for broad/sev1 incidents or unclear containment.\n"
+    "If a recent deployment strongly correlates with breakage, prefer bad_deploy and rollback.\n"
+    "Use concise first_action text with operational keywords (restart/reconnect/rollback/pool/deadlock).\n"
     "Respond ONLY with a JSON object with these exact fields:\n"
     "{\n"
     '  "severity": one of [low, medium, high, critical],\n'
