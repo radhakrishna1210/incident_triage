@@ -11,121 +11,197 @@ tags:
   - openenv
 ---
 
-# Incident Triage — OpenEnv Hackathon Submission
+# Incident Triage — OpenEnv Environment
 
-> **Can your LLM handle a production outage at 3am?**
-> This environment puts any AI model in the seat of an on-call SRE engineer and scores how well it triages real incidents.
+**Can your LLM handle a production outage at 3 AM?**
+
+This environment drops an AI agent into the seat of an on-call SRE engineer. It receives real server logs, firing alerts, CPU/memory metrics, and a list of affected services — then must make the right call under pressure: classify severity, pinpoint the root cause, decide on a first action, and determine whether to escalate.
+
+Three scenarios. Increasing difficulty. Deterministic grading. Scores between 0.0 and 1.0.
+
+**Live Environment:** [HF Space](https://huggingface.co/spaces/radhakrishna1210/incident-triage)
 
 ---
 
-## The Idea
+## Why Incident Triage?
 
 Production systems break. When they do, an on-call engineer gets paged with a wall of logs, firing alerts, and seconds to make the right call:
 
-- How bad is this?
-- What actually broke?
-- What do I do first?
-- Do I wake up my manager?
+- **How bad is this?** (severity classification)
+- **What actually broke?** (root cause analysis)
+- **What do I do first?** (action planning)
+- **Do I wake up my manager?** (escalation judgment)
 
-This environment simulates exactly that — three realistic incident scenarios of increasing difficulty — and automatically scores an AI model's response. Plug in any LLM, run all three tasks, get a score between 0 and 1.
+These are decisions real SREs make every day. Getting them wrong costs money, reputation, and sleep. This environment benchmarks whether an AI model can reason through ambiguous, high-stakes operational scenarios — not trivia, not toy problems.
 
-It's a benchmark for **real-world SRE reasoning**, not trivia.
+It tests **calibrated judgment**: over-escalating a contained database restart is penalized just like missing a critical cascading failure. The model must be precise, not just cautious.
 
 ---
 
 ## How It Works
 
 ```
-AI model
-   │
-   │  receives: server logs, active alerts, CPU/memory metrics, affected services
-   ▼
-responds with a structured JSON action:
-   {
-     "severity":    "low" | "medium" | "high" | "critical",
-     "root_cause":  "database" | "memory" | "network" | "bad_deploy" | "unknown",
-     "first_action": "<free text describing what to do>",
-     "escalate":    true | false
-   }
-   │
-   ▼
-environment grades it → reward score 0.0 – 1.0
+                        ┌─────────────────────────────┐
+                        │      AI Model / Agent        │
+                        └──────────────┬──────────────┘
+                                       │
+                    receives: server logs, active alerts,
+                    CPU/memory metrics, affected services,
+                    recent deployments
+                                       │
+                                       ▼
+                    ┌─────────────────────────────────────┐
+                    │  Responds with structured JSON:      │
+                    │  {                                   │
+                    │    "severity":    low|med|high|crit  │
+                    │    "root_cause":  database|memory|   │
+                    │                  network|bad_deploy| │
+                    │                  unknown             │
+                    │    "first_action": "restart db..."   │
+                    │    "escalate":    true|false          │
+                    │  }                                   │
+                    └──────────────────┬──────────────────┘
+                                       │
+                                       ▼
+                    ┌─────────────────────────────────────┐
+                    │  Environment grades it:              │
+                    │  reward score 0.0 – 1.0              │
+                    │  (per-field partial credit)          │
+                    └─────────────────────────────────────┘
 ```
 
-The environment runs as an HTTP server. Any evaluator connects, calls `/reset` to start a scenario, calls `/step` with the model's action, and receives a reward.
+The environment runs as an HTTP server following the OpenEnv spec. Any evaluator connects, calls `POST /reset` to start a scenario, calls `POST /step` with the model's action, and receives a reward.
+
+---
+
+## Observation Space
+
+Each observation represents the state of a production system during an incident:
+
+| Field | Type | Description |
+|---|---|---|
+| `task_name` | `string` | Scenario identifier |
+| `turn` | `int` | Current turn (0-indexed) |
+| `logs` | `list[str]` | Raw server log lines (error traces, connection failures, timeouts) |
+| `alerts` | `list[str]` | Active monitoring alerts (PagerDuty-style) |
+| `cpu_percent` | `float` | Current CPU utilization (0–100) |
+| `memory_percent` | `float` | Current memory utilization (0–100) |
+| `services_affected` | `list[str]` | Services currently degraded or down |
+| `recent_deployments` | `list[str]` | Deployments in the last 24 hours |
+
+All fields are typed Pydantic models (`IncidentTriageObservation`).
+
+## Action Space
+
+The agent must respond with a structured triage decision:
+
+| Field | Type | Values | What it tests |
+|---|---|---|---|
+| `severity` | `string` | `low`, `medium`, `high`, `critical` | Threat assessment calibration |
+| `root_cause` | `string` | `database`, `memory`, `network`, `bad_deploy`, `unknown` | Diagnostic reasoning |
+| `first_action` | `string` | Free text | Operational knowledge (graded by keyword match) |
+| `escalate` | `bool` | `true` / `false` | Escalation judgment — over-escalation is penalized |
+
+All fields are typed Pydantic models (`IncidentTriageAction`).
 
 ---
 
 ## The Three Tasks
 
-### Task 1 — `single_service_down` (Easy)
+### Task 1 — `single_service_down` (Easy, 1 turn)
 
-The `auth-service` is down. All logs point to `connection refused port 5432` — that's PostgreSQL. CPU and memory are normal. No recent deployments.
+**Scenario:** The `auth-service` is down. All logs point to `connection refused on port 5432` — that's PostgreSQL. CPU and memory are normal. No recent deployments.
 
-**What a good model does:** Identifies database as root cause, says restart the database, marks severity as high, does NOT escalate (it's a contained, fixable issue).
+**What a good model does:** Identifies `database` as root cause, says restart/reconnect the database, marks severity as `high`, does NOT escalate (it's a contained, fixable issue).
+
+**Scoring rubric:**
+
+| Component | Points | Criteria |
+|---|---|---|
+| Severity | +0.35 | `high` |
+| Root cause | +0.35 | `database` |
+| First action | +0.20 | Contains keywords: `restart`, `reconnect`, or `database`/`db`/`postgres` |
+| Escalation | +0.10 | `false` (no escalation needed) |
+| Escalation penalty | -0.15 | If `true` (over-escalation) |
 
 **Max score: 1.0**
 
 ---
 
-### Task 2 — `bad_deployment` (Medium)
+### Task 2 — `bad_deployment` (Medium, 1 turn)
 
-Three services (`payment`, `order`, `email`) degraded simultaneously — three minutes after `inventory-service v2.3.1` was deployed. The deployment is in the recent deployments list.
+**Scenario:** Three services (`payment`, `order`, `email`) degraded simultaneously — three minutes after `inventory-service v2.3.1` was deployed. The deployment timestamp is in the recent deployments list.
 
-**What a good model does:** Connects the timing, identifies `bad_deploy` as root cause, says rollback the deployment, does NOT escalate (rollback is a clear contained fix).
+**What a good model does:** Connects the timing correlation, identifies `bad_deploy` as root cause, says rollback the deployment, does NOT escalate (rollback is a clear contained fix).
+
+**Scoring rubric:**
+
+| Component | Points | Criteria |
+|---|---|---|
+| Severity | +0.35 | `high` |
+| Root cause | +0.35 | `bad_deploy` |
+| First action | +0.20 | Contains: `rollback`, `roll back`, or `revert` |
+| Escalation | +0.10 | `false` |
+| Escalation penalty | -0.10 | If `true` |
 
 **Max score: 1.0**
 
 ---
 
-### Task 3 — `cascading_failure` (Hard — 2 turns)
+### Task 3 — `cascading_failure` (Hard, 2 turns)
 
-**Turn 1:** PostgreSQL hit its connection limit (500/500). API gateway error rate at 67%. Four services timing out. CPU 91%, memory 88%. Full SLO breach.
+This is a multi-turn episode. The agent must adapt its response based on what happened after its first action.
 
-→ Good response: `critical` severity, `database` root cause, expand the connection pool, escalate immediately.
+**Turn 1:** PostgreSQL has hit its max connection limit (500/500). API gateway error rate is at 67%. Four services are timing out. CPU at 91%, memory at 88%. Full SLO breach.
 
-**Turn 2:** Pool expanded. Most services recovered — but `order-service` is still timing out. Logs show a 45-second query and a possible deadlock. Error rate dropped from 67% to 31%.
+| Component | Points | Criteria |
+|---|---|---|
+| Severity | +0.20 | `critical` |
+| Root cause | +0.20 | `database` |
+| First action | +0.10 | Contains: `connection` or `pool` |
+| Escalation | +0.10 | `true` (this is a broad incident — escalation is correct) |
 
-→ Good response: Still `database`, target the deadlock on `order-service`, kill the blocking query.
+**Turn 2:** Connection pool has been expanded. Most services recovered — but `order-service` is still timing out. Logs reveal a 45-second query and a possible deadlock. Error rate dropped from 67% to 31%.
 
-This is the only task that requires multi-turn reasoning — the model must adapt based on what happened after its first action.
+| Component | Points | Criteria |
+|---|---|---|
+| Root cause | +0.25 | `database` (still a DB issue — deadlock) |
+| First action | +0.25 | Contains: `deadlock` or `order` (targeting the specific problem) |
+| Severity | +0.10 | `high` or `critical` |
 
-**Max score: 1.0 (capped sum of both turns)**
+**Cumulative reward is capped at 1.0.** The model must reason across turns — the second observation changes based on the first action.
+
+**Max score: 1.0**
 
 ---
 
-## Scoring
+## Reward Design Philosophy
 
-Every field in the action is scored separately. The model has to get severity, root cause, the keywords in the action text, and the escalation decision all right to score full marks.
+Every field in the action is scored independently. This creates **partial credit** — a model that gets severity and root cause right but uses weak action keywords still earns 0.70. This is intentional:
 
-Over-escalating (paging on-call for a contained issue) is penalised. Correct diagnosis with wrong action keywords also loses points. This is intentional — it rewards calibrated, precise thinking, not just pattern matching.
+- **Partial progress signals** over full trajectory, not binary pass/fail
+- **Over-escalation penalties** — paging on-call for a contained issue loses points
+- **Keyword-grounded actions** — the model must use operationally meaningful language, not vague responses
+- **Multi-turn adaptation** — Task 3 requires the model to update its diagnosis after new information
+- **Scenario variants** — each task has 2 log/alert variants that alternate, preventing keyword overfitting
 
-| Task | Max Score |
-|---|---|
-| single_service_down | 1.0 |
-| bad_deployment | 1.0 |
-| cascading_failure | 1.0 |
-| **Average** | **1.0** |
+The reward function tests **calibrated, precise SRE reasoning** — not just pattern matching.
 
 ---
 
 ## Evaluation Metrics
 
-We track three core metrics:
-
 | Metric | Formula | Target |
 |---|---|---|
-| Per-task reward | final `reward` returned by environment (0.0 to 1.0) | >= 0.80 |
+| Per-task reward | Final `reward` returned by environment (0.0–1.0) | >= 0.80 |
 | Benchmark average | `(task1 + task2 + task3) / 3` | >= 0.85 |
-| Perfect-task count | number of tasks with score `1.0` | 2+ |
+| Perfect-task count | Number of tasks scoring `1.0` | 2+ |
 
-Notes:
-- `cascading_failure` is multi-turn; both turns are summed and capped at `1.0`.
-- Over-escalation and weak first-action phrasing reduce reward.
+---
 
-## Reference Baselines
+## Baseline Scores
 
-### LLM baseline (historical, before rubric robustness update)
+### LLM Baseline (Qwen2.5-72B-Instruct)
 
 | Task | Score |
 |---|---|
@@ -134,11 +210,9 @@ Notes:
 | cascading_failure | 1.00 |
 | **Average** | **0.717** |
 
-This historical run exposed two common failure modes: over-escalation and keyword brittleness.
+Common failure modes: over-escalation on contained issues, weak first-action keyword coverage.
 
-### Deterministic benchmark agent (current rubric sanity check)
-
-A rule-based "oracle-style" agent now runs via `GET /scoreboard` and should score:
+### Deterministic Oracle Agent (rubric sanity check)
 
 | Task | Score |
 |---|---|
@@ -147,27 +221,92 @@ A rule-based "oracle-style" agent now runs via `GET /scoreboard` and should scor
 | cascading_failure | 1.00 |
 | **Average** | **1.000** |
 
-Use this as a regression guard for environment changes; your target LLM should approach this ceiling.
+A rule-based agent that submits perfect answers. Runs automatically via `GET /scoreboard`. Use this as a regression guard — your target LLM should approach this ceiling.
 
 ---
 
-## Running It
+## API Reference
 
-### Start the server locally
+The environment follows the **OpenEnv standard HTTP interface**:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/reset` | Start a new episode. Accepts optional `task_name`. Returns first observation. |
+| `POST` | `/step` | Submit an action (JSON body). Returns reward, next observation, done flag. |
+| `GET` | `/state` | Current episode state (task, done, cumulative reward). |
+| `GET` | `/schema` | Full JSON schemas for Action and Observation models. |
+| `GET` | `/health` | Health check. Returns `{"status": "ok"}`. |
+| `GET` | `/metadata` | Environment metadata (name, description, tasks). |
+| `GET` | `/docs` | Interactive Swagger UI for all endpoints. |
+
+### Additional Routes
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/demo` | Interactive demo UI — manually reset tasks and submit actions. |
+| `GET` | `/scoreboard` | Runs the deterministic oracle agent in-browser and displays scores. |
+
+### Example: Reset + Step
+
+```bash
+# Start task 1
+curl -X POST http://localhost:8000/reset \
+  -H "Content-Type: application/json" \
+  -d '{"task_name": "single_service_down"}'
+
+# Submit an action
+curl -X POST http://localhost:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{
+    "severity": "high",
+    "root_cause": "database",
+    "first_action": "restart database and verify connectivity",
+    "escalate": false
+  }'
+# → {"reward": 1.0, "done": true, ...}
+```
+
+---
+
+## Project Structure
+
+```
+incident_triage/
+├── models.py                              # Pydantic Action, Observation, State models
+├── client.py                              # HTTP client (IncidentTriageEnv)
+├── openenv.yaml                           # OpenEnv metadata (name, tasks, tags)
+├── pyproject.toml                         # Package config; entry point: uv run server
+├── server/
+│   ├── app.py                             # FastAPI app — OpenEnv + /demo + /scoreboard
+│   ├── incident_triage_environment.py     # Core: 3 scenarios, graders, episode state
+│   ├── demo.html                          # Interactive testing UI
+│   ├── scoreboard.html                    # Oracle agent benchmark dashboard
+│   └── Dockerfile                         # Multi-stage Docker build
+├── tests/
+│   ├── conftest.py                        # Offline test stubs (no openenv dependency)
+│   └── test_incident_triage_environment.py # 7 unit tests covering all tasks + variants
+└── inference.py                           # LLM inference runner (internal)
+
+inference.py  (repo root)                  # Hackathon inference script with [START]/[STEP]/[END] logs
+```
+
+---
+
+## Running Locally
+
+### Quick Start
 
 ```bash
 cd incident_triage
 uv sync
 uv run server
-# Server running at http://localhost:8000
-# API docs at http://localhost:8000/docs
+# Server at http://localhost:8000
+# Swagger at http://localhost:8000/docs
 # Demo UI at http://localhost:8000/demo
-# Scoreboard UI at http://localhost:8000/scoreboard
+# Scoreboard at http://localhost:8000/scoreboard
 ```
 
-If you see `ModuleNotFoundError: openenv`, run `uv sync` in this folder and start again with `uv run server`.
-
-### Run inference against any LLM
+### Run Inference Against Any LLM
 
 ```bash
 export API_BASE_URL="https://router.huggingface.co/v1"
@@ -178,47 +317,55 @@ export ENV_URL="http://localhost:8000"
 python inference.py
 ```
 
-### Run with Docker
+### Docker
 
 ```bash
 docker build -t incident-triage:latest -f server/Dockerfile .
 docker run -p 8000:8000 incident-triage:latest
 ```
 
----
+### Run Tests
 
-## API Reference
-
-| Method | Endpoint | What it does |
-|---|---|---|
-| `POST` | `/reset` | Start a new episode, get the first observation |
-| `POST` | `/step` | Submit an action, get reward + next observation |
-| `GET` | `/state` | Check current episode state |
-| `GET` | `/schema` | Get full JSON schemas for action and observation |
-| `GET` | `/health` | Health check |
-| `GET` | `/metadata` | Environment info |
-| `GET` | `/docs` | Interactive Swagger UI |
+```bash
+cd incident_triage
+python -m pytest tests/ -v
+```
 
 ---
 
-## Project Structure
+## Technical Design Decisions
 
-```
-incident_triage/
-├── models.py                          # Action, Observation, State data models
-├── client.py                          # WebSocket client for connecting to the server
-├── inference.py                       # Run any LLM against all 3 tasks
-├── server/
-│   ├── app.py                         # FastAPI app entry point
-│   └── incident_triage_environment.py # The 3 scenarios + grading logic
-└── pyproject.toml
-```
+| Decision | Rationale |
+|---|---|
+| **Stateful HTTP via module-level `_SHARED` dict** | OpenEnv creates a fresh Environment instance per HTTP request. A module-level dict persists episode state across `/reset` and `/step` calls without external storage. |
+| **2 scenario variants per task** | Logs and alert text alternate between runs, preventing models from overfitting to specific string patterns while keeping grading deterministic. |
+| **Keyword-based action grading** | Free-text `first_action` is graded by presence of operational keywords (restart, rollback, pool, deadlock). This rewards domain-appropriate language without requiring exact string matches. |
+| **Escalation as a scored boolean** | Escalation is not always correct. Contained single-service failures should NOT be escalated. Broad cascading failures SHOULD be. This tests calibrated judgment, not a bias toward caution. |
+| **Multi-turn for Task 3 only** | The cascading failure scenario naturally requires adaptation — the system state changes after the first intervention. Single-service and bad-deploy are diagnosed in one shot. |
+| **Cumulative reward capped at 1.0** | Prevents reward inflation on multi-turn tasks. Both turns must contribute meaningfully. |
+
+---
+
+## OpenEnv Compliance
+
+| Spec Requirement | Implementation |
+|---|---|
+| Typed Observation model | `IncidentTriageObservation` (Pydantic) — logs, alerts, cpu, memory, services, deployments, turn, task_name |
+| Typed Action model | `IncidentTriageAction` (Pydantic) — severity, root_cause, first_action, escalate |
+| Typed State model | `IncidentTriageState` (Pydantic) — task_name, done, cumulative_reward |
+| `step(action)` | Returns observation, reward (0.0–1.0), done, info |
+| `reset(task_name?)` | Returns initial observation; cycles tasks if no name given |
+| `state()` | Returns current episode state |
+| `openenv.yaml` | Name, description, tags, task list |
+| HF Space deployment | Docker SDK, `app_port: 8000`, tagged `openenv` |
+| Dockerfile | Multi-stage build, runs on minimal resources |
 
 ---
 
 ## Built For
 
-**OpenEnv Hackathon** — a competition to build standardised AI evaluation environments.
-OpenEnv is a framework by Meta that lets anyone build, host, and benchmark AI agents against structured environments over a standard HTTP API.
+**OpenEnv Hackathon** — Meta x Scaler School of Technology
 
-This submission: **Mission Bangalore**
+OpenEnv is a framework by Meta for building standardized AI evaluation environments. This submission puts LLMs through real-world SRE scenarios and scores their operational reasoning.
+
+**Team:** Mission Bangalore
