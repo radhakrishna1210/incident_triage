@@ -1,0 +1,21 @@
+services:
+  incident-triage:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: incident-triage:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # LLM inference (required only for inference.py)
+      - API_BASE_URL=${API_BASE_URL:-https://router.huggingface.co/v1}
+      - MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-72B-Instruct}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - ENV_URL=http://localhost:8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped

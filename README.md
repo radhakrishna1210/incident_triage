@@ -326,12 +326,40 @@ python -m pytest tests/ -v
 # 7 tests: perfect scores, partial scores, penalty paths, multi-turn, variant rotation
 ```
 
-### Docker
+### Docker (build & run manually)
 
 ```bash
+cd incident_triage
 docker build -t incident-triage:latest -f server/Dockerfile .
-docker run -p 8000:8000 incident-triage:latest
+docker run -p 8000:8000 \
+  -e API_BASE_URL=https://router.huggingface.co/v1 \
+  -e MODEL_NAME=Qwen/Qwen2.5-72B-Instruct \
+  -e HF_TOKEN=hf_... \
+  incident-triage:latest
 # HEALTHCHECK: curl http://localhost:8000/health every 30s
+```
+
+### Docker Compose (recommended for local dev)
+
+```bash
+cd incident_triage
+# Optional: set env vars for LLM inference
+export HF_TOKEN=hf_...
+export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+
+docker compose up --build
+# Server at http://localhost:8000
+# Stop: docker compose down
+```
+
+### HuggingFace Space (live deployment)
+
+The environment is deployed as a Docker container on HuggingFace Spaces. Any push to the repo triggers a rebuild:
+
+```bash
+# Push triggers HF to rebuild and redeploy the Docker container
+git push origin master
+# Live at: https://huggingface.co/spaces/radhakrishna1210/incident-triage
 ```
 
 ---
