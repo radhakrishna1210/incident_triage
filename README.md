@@ -399,4 +399,4 @@ docker run -p 8000:8000 incident-triage:latest
 
 OpenEnv is a framework by Meta for building standardized AI evaluation environments. This submission puts LLMs through real-world SRE scenarios and scores their operational reasoning with deterministic, partial-credit reward functions.
 
-**Team: Mission Bangalore**
+**Team: Merge Conflict**
