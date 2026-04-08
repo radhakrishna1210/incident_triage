@@ -189,6 +189,15 @@ _CASCADING_TURN2_OBS = dict(
 # Graders
 # ---------------------------------------------------------------------------
 
+_REWARD_FLOOR = 0.01
+_REWARD_CEIL = 0.99
+
+
+def _clamp(score: float) -> float:
+    """Clamp reward to the open interval (0, 1) as required by the OpenEnv spec."""
+    return max(_REWARD_FLOOR, min(_REWARD_CEIL, score))
+
+
 def _grade_single_service_down(action: IncidentTriageAction) -> float:
     score = 0.0
     if action.severity == "high":
@@ -204,7 +213,7 @@ def _grade_single_service_down(action: IncidentTriageAction) -> float:
         score += 0.10
     if action.escalate is True:
         score -= 0.15
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 def _grade_bad_deployment(action: IncidentTriageAction) -> float:
@@ -220,7 +229,7 @@ def _grade_bad_deployment(action: IncidentTriageAction) -> float:
         score += 0.10
     if action.escalate is True:
         score -= 0.10
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 def _grade_cascading_turn1(action: IncidentTriageAction) -> float:
@@ -234,7 +243,7 @@ def _grade_cascading_turn1(action: IncidentTriageAction) -> float:
         score += 0.10
     if action.escalate is True:
         score += 0.10
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 def _grade_cascading_turn2(action: IncidentTriageAction) -> float:
@@ -246,7 +255,7 @@ def _grade_cascading_turn2(action: IncidentTriageAction) -> float:
         score += 0.25
     if action.severity in ("high", "critical"):
         score += 0.10
-    return max(0.0, min(1.0, score))
+    return _clamp(score)
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +339,7 @@ class IncidentTriageEnvironment(Environment):
             raise RuntimeError("Episode is already done. Call reset() to start a new episode.")
 
         turn_reward, episode_done = self._grade(action)
-        self._cumulative_reward = min(1.0, self._cumulative_reward + turn_reward)
+        self._cumulative_reward = min(_REWARD_CEIL, self._cumulative_reward + turn_reward)
         self._current_turn += 1
         self._state = IncidentTriageState(
             episode_id=self._state.episode_id,

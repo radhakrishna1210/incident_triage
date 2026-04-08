@@ -30,7 +30,7 @@ def test_single_service_down_perfect_score() -> None:
     )
 
     assert result.done is True
-    assert result.reward == pytest.approx(1.0)
+    assert result.reward == pytest.approx(0.99)
 
 
 def test_bad_deployment_partial_score_with_escalation_penalty() -> None:
@@ -76,7 +76,7 @@ def test_cascading_failure_is_two_turn_episode() -> None:
         )
     )
     assert turn2.done is True
-    assert turn2.reward == pytest.approx(1.0)  # capped cumulative reward
+    assert turn2.reward == pytest.approx(0.99)  # capped cumulative reward
 
 
 def test_reset_without_task_cycles_through_tasks() -> None:
@@ -102,7 +102,7 @@ def test_bad_deployment_accepts_roll_back_phrase() -> None:
         )
     )
     assert result.done is True
-    assert result.reward == pytest.approx(1.0)
+    assert result.reward == pytest.approx(0.99)
 
 
 def test_single_service_down_accepts_db_reconnect_phrase() -> None:
@@ -117,7 +117,7 @@ def test_single_service_down_accepts_db_reconnect_phrase() -> None:
         )
     )
     assert result.done is True
-    assert result.reward == pytest.approx(1.0)
+    assert result.reward == pytest.approx(0.99)
 
 
 def test_task_specific_reset_rotates_variants() -> None:
