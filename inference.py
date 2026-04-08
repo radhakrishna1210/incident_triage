@@ -1,76 +1,64 @@
 #!/usr/bin/env python3
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """
-Inference Script for Incident Triage Environment
-===================================
+Inference script for the Incident Triage environment.
 
-MANDATORY - Before submitting, ensure the following variables are defined
-in your environment configuration:
+Runs all three tasks in sequence using an LLM agent via an OpenAI-compatible
+API endpoint and reports per-task reward scores.
 
-  API_BASE_URL   The API endpoint for the LLM.
-  MODEL_NAME     The model identifier to use for inference.
-  HF_TOKEN       Your Hugging Face / API key.
-  LOCAL_IMAGE_NAME  The name of the local Docker image for the environment
-                    (used with from_docker_image(); omit to connect via ENV_URL).
-
-STDOUT FORMAT
-  The script emits exactly three line types to stdout:
-
-  [START] task=<task_name> env=<benchmark> model=<model_name>
-  [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-  [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
-
-Rules:
-  - One [START] line at episode begin.
-  - One [STEP] line per step, immediately after env.step() returns.
-  - One [END] line after the task completes, always emitted (even on exception).
-  - reward and rewards are formatted to 2 decimal places.
-  - done and success are lowercase booleans: true or false.
-  - error is the raw error string, or null if none.
-  - All fields on a single line with no newlines within a line.
-  - Each task should return score in [0, 1].
+Required environment variables:
+  API_BASE_URL  — Base URL of the OpenAI-compatible inference endpoint
+  MODEL_NAME    — Model identifier to pass to the API
+  HF_TOKEN      — Bearer token (Hugging Face or other provider)
+  ENV_URL       — Base URL of the running IncidentTriage env server
+                  (default: http://localhost:8000)
 """
 
-import asyncio
 import json
 import os
 import re
-import textwrap
-from typing import List, Optional
 
 from openai import OpenAI
 
-from incident_triage.client import IncidentTriageEnv
-from incident_triage.models import IncidentTriageAction
+try:
+    from client import IncidentTriageEnv
+    from models import IncidentTriageAction
+except ImportError:
+    from incident_triage.client import IncidentTriageEnv  # type: ignore[no-redef]
+    from incident_triage.models import IncidentTriageAction  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
-ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
+API_BASE_URL = os.environ["API_BASE_URL"]
+MODEL_NAME = os.environ["MODEL_NAME"]
+HF_TOKEN = os.environ["HF_TOKEN"]
+ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
 
-BENCHMARK = "incident_triage"
 TASKS = ["single_service_down", "bad_deployment", "cascading_failure"]
 
-SYSTEM_PROMPT = textwrap.dedent("""\
-    You are an expert SRE engineer doing incident triage.
-    You will receive server logs and alerts.
-    Prioritize root-cause precision and calibrated escalation.
-    Escalate=true only for broad/sev1 incidents or unclear containment.
-    If a recent deployment strongly correlates with breakage, prefer bad_deploy and rollback.
-    Use concise first_action text with operational keywords (restart/reconnect/rollback/pool/deadlock).
-    Respond ONLY with a JSON object with these exact fields:
-    {
-      "severity": one of [low, medium, high, critical],
-      "root_cause": one of [database, memory, network, bad_deploy, unknown],
-      "first_action": string describing what you do first,
-      "escalate": true or false
-    }
-    No explanation. JSON only.
-""").strip()
+SYSTEM_PROMPT = (
+    "You are an expert SRE engineer doing incident triage.\n"
+    "You will receive server logs and alerts.\n"
+    "Prioritize root-cause precision and calibrated escalation.\n"
+    "Escalate=true only for broad/sev1 incidents or unclear containment.\n"
+    "If a recent deployment strongly correlates with breakage, prefer bad_deploy and rollback.\n"
+    "Use concise first_action text with operational keywords (restart/reconnect/rollback/pool/deadlock).\n"
+    "Respond ONLY with a JSON object with these exact fields:\n"
+    "{\n"
+    '  "severity": one of [low, medium, high, critical],\n'
+    '  "root_cause": one of [database, memory, network, bad_deploy, unknown],\n'
+    '  "first_action": string describing what you do first,\n'
+    '  "escalate": true or false\n'
+    "}\n"
+    "No explanation. JSON only."
+)
 
 _FALLBACK_ACTION = IncidentTriageAction(
     severity="low",
@@ -79,35 +67,12 @@ _FALLBACK_ACTION = IncidentTriageAction(
     escalate=False,
 )
 
-
 # ---------------------------------------------------------------------------
-# Structured stdout logging — [START] / [STEP] / [END]
+# Helpers
 # ---------------------------------------------------------------------------
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
-
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
-    print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True,
-    )
-
-
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
-        flush=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# LLM helpers
-# ---------------------------------------------------------------------------
 
 def _obs_to_prompt(obs) -> str:
     """Format an observation into a human-readable prompt for the LLM."""
@@ -129,9 +94,9 @@ def _obs_to_prompt(obs) -> str:
     return "\n".join(lines)
 
 
-def _call_llm(client: OpenAI, user_content: str) -> IncidentTriageAction:
-    """Call the LLM and parse its JSON response into an IncidentTriageAction."""
-    response = client.chat.completions.create(
+def _call_llm(user_content: str) -> IncidentTriageAction:
+    """Call the LLM and parse its response into an IncidentTriageAction."""
+    response = llm.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -141,107 +106,80 @@ def _call_llm(client: OpenAI, user_content: str) -> IncidentTriageAction:
         max_tokens=256,
     )
     raw = response.choices[0].message.content or ""
+
+    # Strip markdown code fences if present
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
 
     try:
         data = json.loads(cleaned)
-        return IncidentTriageAction(
+        action = IncidentTriageAction(
             severity=data["severity"],
             root_cause=data["root_cause"],
             first_action=str(data.get("first_action", "no action")),
             escalate=bool(data.get("escalate", False)),
         )
+        return action
     except Exception as exc:
-        print(f"[DEBUG] Failed to parse LLM response ({exc!r}). Using fallback.", flush=True)
+        print(f"  [WARN] Failed to parse LLM response ({exc!r}). Using fallback action.")
         return _FALLBACK_ACTION
 
 
-def _action_to_str(action: IncidentTriageAction) -> str:
-    """Compact JSON representation of an action for the [STEP] log line."""
-    return json.dumps(
-        {
-            "severity": action.severity,
-            "root_cause": action.root_cause,
-            "first_action": action.first_action,
-            "escalate": action.escalate,
-        },
-        separators=(",", ":"),
-    )
+def _run_task(env, task_name: str) -> float:
+    """Run a single task to completion and return the final reward."""
+    print(f"\n{'=' * 60}")
+    print(f"Task: {task_name}")
+    print("=" * 60)
+
+    step_result = env.reset(task_name=task_name)
+    obs = step_result.observation
+    final_reward = 0.0
+
+    # Episode loop — cascading_failure needs 2 turns; others need 1
+    while True:
+        prompt = _obs_to_prompt(obs)
+        print(f"\n[Turn {obs.turn}] Querying LLM...")
+        action = _call_llm(prompt)
+        print(
+            f"  severity={action.severity!r}  root_cause={action.root_cause!r}  "
+            f"escalate={action.escalate}"
+        )
+        print(f"  first_action: {action.first_action}")
+
+        result = env.step(action)
+        final_reward = result.reward if result.reward is not None else 0.0
+        print(f"  => reward: {final_reward:.3f}  done: {result.done}")
+
+        if result.done:
+            break
+
+        obs = result.observation
+
+    print(f"\nFinal score for '{task_name}': {final_reward:.3f}")
+    return final_reward
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-async def main() -> None:
-    llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+def main() -> None:
+    scores: dict[str, float] = {}
 
-    if IMAGE_NAME:
-        env = await IncidentTriageEnv.from_docker_image(IMAGE_NAME)
-    else:
-        env = IncidentTriageEnv(base_url=ENV_URL)
+    async_env = IncidentTriageEnv(base_url=ENV_URL)
+    with async_env.sync() as env:
+        for task_name in TASKS:
+            scores[task_name] = _run_task(env, task_name)
 
-    try:
-        for task in TASKS:
-            rewards: List[float] = []
-            steps_taken = 0
-            score = 0.0
-            success = False
-
-            log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
-
-            try:
-                result = await env.reset(task_name=task)
-                obs = result.observation
-
-                while not result.done:
-                    step_num = steps_taken + 1
-                    prompt = _obs_to_prompt(obs)
-                    action = _call_llm(llm, prompt)
-                    action_str = _action_to_str(action)
-
-                    result = await env.step(action)
-                    reward = result.reward if result.reward is not None else 0.0
-                    done = result.done
-                    error = None
-
-                    rewards.append(reward)
-                    steps_taken = step_num
-
-                    log_step(
-                        step=step_num,
-                        action=action_str,
-                        reward=reward,
-                        done=done,
-                        error=error,
-                    )
-
-                    if done:
-                        break
-                    obs = result.observation
-
-                # Final score is the last reward (cumulative for multi-turn tasks)
-                score = rewards[-1] if rewards else 0.0
-                score = min(max(score, 0.0), 1.0)
-                success = score >= 0.5
-
-            except Exception as exc:
-                print(f"[DEBUG] Task {task} error: {exc}", flush=True)
-
-            finally:
-                log_end(
-                    success=success,
-                    steps=steps_taken,
-                    score=score,
-                    rewards=rewards,
-                )
-
-    finally:
-        try:
-            await env.close()
-        except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", flush=True)
+    print("\n" + "=" * 60)
+    print("FINAL SUMMARY")
+    print("=" * 60)
+    total = 0.0
+    for task, score in scores.items():
+        print(f"  {task:<30} {score:.3f}")
+        total += score
+    print(f"  {'AVERAGE':<30} {total / len(scores):.3f}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
