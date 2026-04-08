@@ -126,35 +126,30 @@ def _call_llm(user_content: str) -> IncidentTriageAction:
 
 def _run_task(env, task_name: str) -> float:
     """Run a single task to completion and return the final reward."""
-    print(f"\n{'=' * 60}")
-    print(f"Task: {task_name}")
-    print("=" * 60)
+    print(f"[START] task={task_name}", flush=True)
 
     step_result = env.reset(task_name=task_name)
     obs = step_result.observation
     final_reward = 0.0
+    step_num = 0
 
     # Episode loop — cascading_failure needs 2 turns; others need 1
     while True:
         prompt = _obs_to_prompt(obs)
-        print(f"\n[Turn {obs.turn}] Querying LLM...")
         action = _call_llm(prompt)
-        print(
-            f"  severity={action.severity!r}  root_cause={action.root_cause!r}  "
-            f"escalate={action.escalate}"
-        )
-        print(f"  first_action: {action.first_action}")
 
         result = env.step(action)
-        final_reward = result.reward if result.reward is not None else 0.0
-        print(f"  => reward: {final_reward:.3f}  done: {result.done}")
+        step_num += 1
+        turn_reward = result.reward if result.reward is not None else 0.0
+        final_reward = turn_reward
+        print(f"[STEP] step={step_num} reward={turn_reward:.4f}", flush=True)
 
         if result.done:
             break
 
         obs = result.observation
 
-    print(f"\nFinal score for '{task_name}': {final_reward:.3f}")
+    print(f"[END] task={task_name} score={final_reward:.4f} steps={step_num}", flush=True)
     return final_reward
 
 
