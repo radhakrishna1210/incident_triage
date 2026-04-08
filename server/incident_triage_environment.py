@@ -329,7 +329,7 @@ class IncidentTriageEnvironment(Environment):
             cumulative_reward=0.0,
         )
 
-        obs = IncidentTriageObservation(**self._initial_obs_for_task(task_name), done=False, reward=0.0)
+        obs = IncidentTriageObservation(**self._initial_obs_for_task(task_name), done=False, reward=None)
         self._persist()
         return obs
 
