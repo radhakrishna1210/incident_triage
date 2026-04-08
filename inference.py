@@ -36,9 +36,9 @@ except ImportError:
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ["API_BASE_URL"]
-MODEL_NAME = os.environ["MODEL_NAME"]
-HF_TOKEN = os.environ["HF_TOKEN"]
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
 
 TASKS = ["single_service_down", "bad_deployment", "cascading_failure"]
@@ -71,7 +71,7 @@ _FALLBACK_ACTION = IncidentTriageAction(
 # Helpers
 # ---------------------------------------------------------------------------
 
-llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+llm: OpenAI | None = None
 
 
 def _obs_to_prompt(obs) -> str:
@@ -96,7 +96,7 @@ def _obs_to_prompt(obs) -> str:
 
 def _call_llm(user_content: str) -> IncidentTriageAction:
     """Call the LLM and parse its response into an IncidentTriageAction."""
-    response = llm.chat.completions.create(
+    response = llm.chat.completions.create(  # type: ignore[union-attr]
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -163,6 +163,9 @@ def _run_task(env, task_name: str) -> float:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    global llm
+    llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+
     scores: dict[str, float] = {}
 
     async_env = IncidentTriageEnv(base_url=ENV_URL)
