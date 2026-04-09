@@ -24,7 +24,8 @@
     <div class="card">
       <div style="margin-bottom:10px;">
         <label class="muted" for="apiBase">API Base URL</label>
-        <input id="apiBase" value="http://localhost:8000" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #334155;background:#020617;color:#e2e8f0;" />
+        <input id="apiBase" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #334155;background:#020617;color:#e2e8f0;" />
+        <p class="muted" style="margin:6px 0 0;">Leave blank to target this server. To use a different server, it must have CORS enabled.</p>
       </div>
       <button id="runBtn">Run Benchmark</button>
       <span id="status" class="muted"></span>
@@ -58,7 +59,7 @@
 
     function getApiBase() {
       const raw = (document.getElementById("apiBase").value || "").trim();
-      return raw || "http://localhost:8000";
+      return raw || window.location.origin;
     }
 
     function apiUrl(path) {
@@ -112,7 +113,10 @@
         render(scores);
         status.textContent = " Done.";
       } catch (err) {
-        status.textContent = ` Error: ${err.message}`;
+        const isCors = err.message === "Failed to fetch";
+        status.textContent = isCors
+          ? " Error: Could not reach the server. If targeting a remote URL, make sure it has CORS enabled."
+          : ` Error: ${err.message}`;
       }
     });
   </script>

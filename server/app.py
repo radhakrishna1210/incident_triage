@@ -30,6 +30,7 @@ Usage:
 import pathlib
 
 try:
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import RedirectResponse
     from fastapi.responses import HTMLResponse
     from openenv.core.env_server.http_server import create_app
@@ -55,8 +56,19 @@ app = create_app(
     max_concurrent_envs=10,  # allow up to 10 concurrent WebSocket sessions for parallel evaluation
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 _DEMO_HTML = pathlib.Path(__file__).with_name("demo.html")
 _SCOREBOARD_HTML = pathlib.Path(__file__).with_name("scoreboard.html")
+_SCHEMA_HTML = pathlib.Path(__file__).with_name("schema.html")
+_HEALTH_HTML = pathlib.Path(__file__).with_name("health.html")
+_STATE_HTML = pathlib.Path(__file__).with_name("state.html")
+_METADATA_HTML = pathlib.Path(__file__).with_name("metadata.html")
 
 
 @app.get("/")
@@ -75,6 +87,30 @@ def demo_page() -> HTMLResponse:
 def scoreboard_page() -> HTMLResponse:
     """Scoreboard UI to run all benchmark tasks."""
     return HTMLResponse(_SCOREBOARD_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/schema-ui", response_class=HTMLResponse)
+def schema_ui_page() -> HTMLResponse:
+    """Human-readable schema viewer."""
+    return HTMLResponse(_SCHEMA_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/health-ui", response_class=HTMLResponse)
+def health_ui_page() -> HTMLResponse:
+    """Live health status page."""
+    return HTMLResponse(_HEALTH_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/state-ui", response_class=HTMLResponse)
+def state_ui_page() -> HTMLResponse:
+    """Live episode state viewer."""
+    return HTMLResponse(_STATE_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/metadata-ui", response_class=HTMLResponse)
+def metadata_ui_page() -> HTMLResponse:
+    """Environment metadata viewer."""
+    return HTMLResponse(_METADATA_HTML.read_text(encoding="utf-8"))
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Incident Triage — State</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; background: #020617; color: #e2e8f0; }
+    .wrap { max-width: 700px; margin: 0 auto; padding: 28px 20px; }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .muted { color: #94a3b8; font-size: 13px; }
+    .card { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 20px 24px; margin-top: 20px; }
+    .row { display: flex; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #1e293b; }
+    .row:last-child { border-bottom: none; }
+    .label { color: #64748b; font-size: 13px; font-family: monospace; min-width: 140px; }
+    .value { font-family: monospace; color: #f1f5f9; font-size: 14px; text-align: right; word-break: break-all; }
+    .value.none { color: #475569; font-style: italic; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .badge-active { background: #14532d; color: #4ade80; }
+    .badge-idle   { background: #1e293b; color: #64748b; }
+    .refresh-bar { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: #475569; font-size: 12px; }
+    #error { color: #f87171; margin-top: 12px; font-size: 13px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Episode State</h1>
+    <p class="muted">Live snapshot of the current environment session.</p>
+    <p id="error"></p>
+
+    <div class="card" id="stateCard">
+      <div class="row">
+        <span class="label">episode_id</span>
+        <span class="value none" id="episodeId">—</span>
+      </div>
+      <div class="row">
+        <span class="label">step_count</span>
+        <span class="value" id="stepCount">—</span>
+      </div>
+      <div class="row">
+        <span class="label">status</span>
+        <span class="value" id="statusBadge">—</span>
+      </div>
+    </div>
+
+    <div class="refresh-bar">
+      <span>Auto-refreshes every 3 seconds</span>
+      <span id="lastCheck"></span>
+    </div>
+  </div>
+
+  <script>
+    async function load() {
+      const errEl = document.getElementById("error");
+      try {
+        const res = await fetch(window.location.origin + "/state");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+
+        const episodeId = document.getElementById("episodeId");
+        episodeId.textContent = data.episode_id ?? "none";
+        episodeId.className = "value" + (data.episode_id ? "" : " none");
+
+        document.getElementById("stepCount").textContent = data.step_count ?? 0;
+
+        const badge = document.getElementById("statusBadge");
+        const active = data.episode_id !== null;
+        badge.innerHTML = active
+          ? '<span class="badge badge-active">Active</span>'
+          : '<span class="badge badge-idle">Idle</span>';
+
+        errEl.style.display = "none";
+      } catch (err) {
+        errEl.style.display = "";
+        errEl.textContent = "Failed to load state: " + err.message;
+      }
+      document.getElementById("lastCheck").textContent = "Last updated: " + new Date().toLocaleTimeString();
+    }
+
+    load();
+    setInterval(load, 3000);
+  </script>
+</body>
+</html>

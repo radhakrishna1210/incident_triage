@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Incident Triage — Schema</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; background: #020617; color: #e2e8f0; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 24px 20px; }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .muted { color: #94a3b8; font-size: 13px; }
+    .section { margin-top: 28px; }
+    .section-title {
+      font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+      padding-bottom: 6px; border-bottom: 1px solid #334155;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .badge {
+      font-size: 11px; font-weight: 700; padding: 2px 8px;
+      border-radius: 999px; letter-spacing: .04em;
+    }
+    .badge-action  { background: #1e3a5f; color: #60a5fa; }
+    .badge-obs     { background: #1a3a2a; color: #4ade80; }
+    .badge-state   { background: #3a2a1a; color: #fb923c; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 10px; background: #0f172a; color: #94a3b8;
+         font-weight: 600; border-bottom: 1px solid #334155; }
+    td { padding: 8px 10px; border-bottom: 1px solid #1e293b; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    .field-name { font-family: monospace; color: #f1f5f9; }
+    .field-type { font-family: monospace; color: #7dd3fc; }
+    .req-yes { color: #4ade80; font-weight: 700; }
+    .req-no  { color: #475569; }
+    .enum-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .enum-tag { background: #1e293b; border: 1px solid #334155; border-radius: 4px;
+                padding: 1px 6px; font-family: monospace; font-size: 12px; color: #cbd5e1; }
+    .card { background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+            overflow: hidden; }
+    .desc { color: #94a3b8; font-size: 12px; margin-top: 2px; }
+    #error { color: #f87171; margin-top: 20px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>API Schema</h1>
+    <p class="muted">JSON schemas for actions, observations, and state in this environment.</p>
+    <p id="error"></p>
+
+    <div id="action-section" class="section" style="display:none">
+      <div class="section-title">
+        <span class="badge badge-action">ACTION</span>
+        IncidentTriageAction
+      </div>
+      <div class="card"><table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+        <tbody id="action-rows"></tbody>
+      </table></div>
+    </div>
+
+    <div id="obs-section" class="section" style="display:none">
+      <div class="section-title">
+        <span class="badge badge-obs">OBSERVATION</span>
+        IncidentTriageObservation
+      </div>
+      <div class="card"><table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+        <tbody id="obs-rows"></tbody>
+      </table></div>
+    </div>
+
+    <div id="state-section" class="section" style="display:none">
+      <div class="section-title">
+        <span class="badge badge-state">STATE</span>
+        State
+      </div>
+      <div class="card"><table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+        <tbody id="state-rows"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <script>
+    function resolveType(prop) {
+      if (prop.enum) return "enum";
+      if (prop.type) return prop.type;
+      if (prop.anyOf) {
+        const types = prop.anyOf.map(t => t.type || "?").filter(t => t !== "null");
+        return types.join(" | ") + (prop.anyOf.some(t => t.type === "null") ? " | null" : "");
+      }
+      if (prop.items) return `array<${prop.items.type || "object"}>`;
+      return "object";
+    }
+
+    function buildRows(schema) {
+      const props = schema.properties || {};
+      const required = new Set(schema.required || []);
+      return Object.entries(props).map(([name, prop]) => {
+        const type = resolveType(prop);
+        const enums = prop.enum
+          ? `<div class="enum-list">${prop.enum.map(e => `<span class="enum-tag">${e}</span>`).join("")}</div>`
+          : "";
+        const desc = prop.description || "";
+        const def = prop.default !== undefined ? ` <span class="muted">(default: ${JSON.stringify(prop.default)})</span>` : "";
+        return `<tr>
+          <td class="field-name">${name}</td>
+          <td class="field-type">${type}${enums}</td>
+          <td class="${required.has(name) ? "req-yes" : "req-no"}">${required.has(name) ? "yes" : "no"}</td>
+          <td><div class="desc">${desc}${def}</div></td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function load() {
+      try {
+        const res = await fetch(window.location.origin + "/schema");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        document.getElementById("action-rows").innerHTML = buildRows(data.action);
+        document.getElementById("action-section").style.display = "";
+
+        document.getElementById("obs-rows").innerHTML = buildRows(data.observation);
+        document.getElementById("obs-section").style.display = "";
+
+        document.getElementById("state-rows").innerHTML = buildRows(data.state);
+        document.getElementById("state-section").style.display = "";
+      } catch (err) {
+        const el = document.getElementById("error");
+        el.style.display = "";
+        el.textContent = "Failed to load schema: " + err.message;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>
