@@ -14,3 +14,28 @@ tags:
   - sre
   - incident-response
   - real-world
+tasks:
+  - name: single_service_down
+    description: >
+      Easy (1 turn). The auth-service is down due to a PostgreSQL connection failure.
+      Agent must identify database as root cause, set severity=high, and
+      choose a restart/reconnect action without unnecessary escalation.
+    difficulty: easy
+    max_turns: 1
+    reward_range: [0.0, 1.0]
+  - name: bad_deployment
+    description: >
+      Medium (1 turn). Three downstream services degraded minutes after a new
+      inventory-service deployment. Agent must correlate the deployment timestamp,
+      identify bad_deploy as root cause, and recommend a rollback.
+    difficulty: medium
+    max_turns: 1
+    reward_range: [0.0, 1.0]
+  - name: cascading_failure
+    description: >
+      Hard (2 turns). PostgreSQL connection pool exhausted causing an SLO breach
+      across four services. Turn 1 requires expanding the pool and escalating.
+      Turn 2 reveals a deadlock in order-service that must be targeted directly.
+    difficulty: hard
+    max_turns: 2
+    reward_range: [0.0, 1.0]
