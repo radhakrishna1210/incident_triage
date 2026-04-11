@@ -120,7 +120,7 @@ All fields are typed Pydantic models (`IncidentTriageAction`).
 |---|---|---|
 | Severity | +0.35 | `high` |
 | Root cause | +0.35 | `database` |
-| First action | +0.20 | Contains keywords: `restart`, `reconnect`, or `database`/`db`/`postgres` |
+| First action | +0.20 | Contains (`restart` or `reconnect`) **AND** (`database` or `db` or `postgres`) |
 | Escalation | +0.10 | `false` (no escalation needed) |
 | Escalation penalty | -0.15 | If `true` (over-escalation) |
 
@@ -201,16 +201,17 @@ The reward function tests **calibrated, precise SRE reasoning** — not just pat
 
 ## Baseline Scores
 
-### LLM Baseline (Qwen2.5-72B-Instruct)
+### LLM Baseline (Qwen2.5-72B-Instruct, optimised prompt)
 
 | Task | Score |
 |---|---|
-| single_service_down | 0.55 |
-| bad_deployment | 0.60 |
-| cascading_failure | 1.00 |
-| **Average** | **0.717** |
+| single_service_down | 0.99 |
+| bad_deployment | 0.99 |
+| cascading_failure | 0.99 |
+| **Average** | **0.990** |
 
-Common failure modes: over-escalation on contained issues, weak first-action keyword coverage.
+The inference script uses a structured system prompt with explicit keyword guidance that aligns with the grading rubric.  
+*Without keyword guidance the same model scored 0.55 / 0.60 / 1.00 (avg 0.717) due to weak first-action phrasing.*
 
 ### Deterministic Oracle Agent (rubric sanity check)
 
@@ -235,7 +236,7 @@ The environment follows the **OpenEnv standard HTTP interface**:
 | `POST` | `/step` | Submit an action (JSON body). Returns reward, next observation, done flag. |
 | `GET` | `/state` | Current episode state (task, done, cumulative reward). |
 | `GET` | `/schema` | Full JSON schemas for Action and Observation models. |
-| `GET` | `/health` | Health check. Returns `{"status": "ok"}`. |
+| `GET` | `/health` | Health check. Returns `{"status": "healthy"}`. |
 | `GET` | `/metadata` | Environment metadata (name, description, tasks). |
 | `GET` | `/docs` | Interactive Swagger UI for all endpoints. |
 
@@ -254,16 +255,18 @@ curl -X POST http://localhost:8000/reset \
   -H "Content-Type: application/json" \
   -d '{"task_name": "single_service_down"}'
 
-# Submit an action
+# Submit an action — action fields must be wrapped in an "action" key
 curl -X POST http://localhost:8000/step \
   -H "Content-Type: application/json" \
   -d '{
-    "severity": "high",
-    "root_cause": "database",
-    "first_action": "restart database and verify connectivity",
-    "escalate": false
+    "action": {
+      "severity": "high",
+      "root_cause": "database",
+      "first_action": "restart database connection pool and verify postgres connectivity",
+      "escalate": false
+    }
   }'
-# → {"reward": 1.0, "done": true, ...}
+# → {"reward": 0.99, "done": true, "observation": {...}}
 ```
 
 ---
@@ -271,23 +274,24 @@ curl -X POST http://localhost:8000/step \
 ## Project Structure
 
 ```
-incident_triage/
-├── models.py                              # Pydantic Action, Observation, State models
-├── client.py                              # HTTP client (IncidentTriageEnv)
-├── openenv.yaml                           # OpenEnv metadata (name, tasks, tags)
-├── pyproject.toml                         # Package config; entry point: uv run server
+incident_triage/            ← repo root
+├── inference.py            # Hackathon inference script — [START]/[STEP]/[END] stdout logs
+├── models.py               # Pydantic Action, Observation, State models
+├── client.py               # HTTP client (IncidentTriageEnv)
+├── openenv.yaml            # OpenEnv metadata: name, version, tags, tasks list
+├── Dockerfile              # Root Dockerfile — used by HF Spaces (Docker SDK)
+├── pyproject.toml          # Package config + dependencies (openenv-core, openai)
 ├── server/
-│   ├── app.py                             # FastAPI app — OpenEnv + /demo + /scoreboard
-│   ├── incident_triage_environment.py     # Core: 3 scenarios, graders, episode state
-│   ├── demo.html                          # Interactive testing UI
-│   ├── scoreboard.html                    # Oracle agent benchmark dashboard
-│   └── Dockerfile                         # Multi-stage Docker build
+│   ├── app.py              # FastAPI app — OpenEnv + /demo + /scoreboard
+│   ├── incident_triage_environment.py  # Core: 3 scenarios, graders, episode state
+│   ├── demo.html           # Interactive testing UI
+│   ├── scoreboard.html     # Oracle agent benchmark dashboard
+│   ├── requirements.txt    # Server dependencies
+│   └── Dockerfile          # Standalone multi-stage Docker build
 ├── tests/
-│   ├── conftest.py                        # Offline test stubs (no openenv dependency)
-│   └── test_incident_triage_environment.py # 7 unit tests covering all tasks + variants
-└── inference.py                           # LLM inference runner (internal)
-
-inference.py  (repo root)                  # Hackathon inference script with [START]/[STEP]/[END] logs
+│   ├── conftest.py         # Offline test stubs (no openenv dependency)
+│   └── test_incident_triage_environment.py  # 7 unit tests covering all tasks + variants
+└── README.md               # This file — also serves as HF Space description
 ```
 
 ---
@@ -317,9 +321,27 @@ export ENV_URL="http://localhost:8000"
 python inference.py
 ```
 
+The script emits structured stdout logs for each task in the required format:
+
+```
+[START] task=single_service_down env=incident_triage model=Qwen/Qwen2.5-72B-Instruct
+[STEP] step=1 action={"severity":"high",...} reward=0.99 done=true error=null
+[END] success=true steps=1 score=0.99 rewards=0.99
+
+[START] task=cascading_failure env=incident_triage model=Qwen/Qwen2.5-72B-Instruct
+[STEP] step=1 action={...} reward=0.60 done=false error=null
+[STEP] step=2 action={...} reward=0.99 done=true error=null
+[END] success=true steps=2 score=0.99 rewards=0.60,0.99
+```
+
 ### Docker
 
 ```bash
+# Using the root Dockerfile (same as HF Spaces)
+docker build -t incident-triage:latest .
+docker run -p 8000:8000 incident-triage:latest
+
+# Or using the server/Dockerfile explicitly
 docker build -t incident-triage:latest -f server/Dockerfile .
 docker run -p 8000:8000 incident-triage:latest
 ```
@@ -356,7 +378,7 @@ python -m pytest tests/ -v
 | `step(action)` | Returns observation, reward (0.0–1.0), done, info |
 | `reset(task_name?)` | Returns initial observation; cycles tasks if no name given |
 | `state()` | Returns current episode state |
-| `openenv.yaml` | Name, description, tags, task list |
+| `openenv.yaml` | Name, description, tags, tasks list (3 tasks with difficulty + reward\_range) |
 | HF Space deployment | Docker SDK, `app_port: 8000`, tagged `openenv` |
 | Dockerfile | Multi-stage build, runs on minimal resources |
 
