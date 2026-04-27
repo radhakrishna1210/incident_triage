@@ -11,7 +11,7 @@ tags:
   - openenv
 ---
 
-# Incident Triage — OpenEnv Environment,
+# Incident Triage — OpenEnv Environment
 
 **Can your LLM handle a production outage at 3 AM?**
 
